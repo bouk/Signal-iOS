@@ -1943,6 +1943,14 @@ typedef enum : NSUInteger {
         return;
     }
 
+	CGFloat offset = self.collectionView.contentOffset.y;
+	CGFloat boundsHeight = self.collectionView.bounds.size.height;
+	CGFloat insetBottom = self.collectionView.contentInset.bottom;
+
+	CGFloat contentHeight = self.collectionView.contentSize.height;
+
+	__block BOOL scrolledToBottomBeforeUpdate = offset + boundsHeight - insetBottom == contentHeight;
+
     [self.collectionView performBatchUpdates:^{
       for (YapDatabaseViewRowChange *rowChange in messageRowChanges) {
           switch (rowChange.type) {
@@ -1982,8 +1990,8 @@ typedef enum : NSUInteger {
                   invalidateLayoutWithContext:[JSQMessagesCollectionViewFlowLayoutInvalidationContext context]];
               [self.collectionView reloadData];
           }
-          if (scrollToBottom) {
-              [self scrollToBottomAnimated:YES];
+          if (scrolledToBottomBeforeUpdate && scrollToBottom) {
+			  [self scrollToBottomAnimated:YES];
           }
         }];
 }
