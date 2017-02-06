@@ -232,6 +232,8 @@ typedef enum : NSUInteger {
 {
     [super viewDidLoad];
 
+	self.inputToolbar.contentView.textView.pasteDelegate = self;
+
     [self.navigationController.navigationBar setTranslucent:NO];
 
     self.messageAdapterCache = [[NSCache alloc] init];
@@ -690,6 +692,41 @@ typedef enum : NSUInteger {
     [self dismissKeyBoard];
     [self popKeyBoard];
     [self.keyboardController beginListeningForKeyboard];
+}
+
+#pragma mark - JSQMessagesComposerTextViewPasteDelegate
+
+- (BOOL)composerTextView:(JSQMessagesComposerTextView *)textView shouldPasteWithSender:(id)sender
+{
+	UIPasteboard* pasteboard = [UIPasteboard generalPasteboard];
+	if ([pasteboard containsPasteboardTypes:@[(NSString*)kUTTypeGIF]]) {
+		NSData* data = [pasteboard dataForPasteboardType:(NSString*)kUTTypeGIF];
+		if (data) {
+			[self sendMessageAttachment:data ofType:@"image/gif"];
+			return NO;
+		}
+	} else if ([pasteboard containsPasteboardTypes:@[(NSString*)kUTTypePNG]]) {
+		NSData* data = [pasteboard dataForPasteboardType:(NSString*)kUTTypePNG];
+		if (data) {
+			[self sendMessageAttachment:data ofType:OWSMimeTypeImagePng];
+			return NO;
+		}
+	} else if ([pasteboard containsPasteboardTypes:@[(NSString*)kUTTypeJPEG]]) {
+		NSData* data = [pasteboard dataForPasteboardType:(NSString*)kUTTypeJPEG];
+		if (data) {
+			[self sendMessageAttachment:data ofType:@"image/jpeg"];
+			return NO;
+		}
+	}
+	UIImage* image = pasteboard.image;
+	if (image) {
+		NSData* data = [self qualityAdjustedAttachmentForImage:image];
+		if (data) {
+			[self sendMessageAttachment:data ofType:@"image/jpeg"];
+			return NO;
+		}
+	}
+	return YES;
 }
 
 #pragma mark - UICollectionViewDelegate
@@ -1689,8 +1726,13 @@ typedef enum : NSUInteger {
         // Static Image captured from camera
 
         UIImage *imageFromCamera = [info[UIImagePickerControllerOriginalImage] normalizedImage];
-        if (imageFromCamera) {
-            [self sendMessageAttachment:[self qualityAdjustedAttachmentForImage:imageFromCamera] ofType:@"image/jpeg"];
+		if (imageFromCamera) {
+			dispatch_async(dispatch_get_main_queue(), ^{
+				[self dismissViewControllerAnimated:YES
+										 completion:^{
+											[self sendMessageAttachment:[self qualityAdjustedAttachmentForImage:imageFromCamera] ofType:@"image/jpeg"];
+										 }];
+			});
         } else {
             failedToPickAttachment(nil);
         }
@@ -1721,32 +1763,37 @@ typedef enum : NSUInteger {
                            }
                            DDLogVerbose(
                                @"Size in bytes: %lu; detected filetype: %@", (unsigned long)imageData.length, dataUTI);
-
-                           if ([dataUTI isEqualToString:(__bridge NSString *)kUTTypeGIF]
-                               && imageData.length <= 5 * 1024 * 1024) {
-                               DDLogVerbose(@"Sending raw image/gif to retain any animation");
-                               /**
-                                * Media Size constraints lifted from Signal-Android
-                                * (org/thoughtcrime/securesms/mms/PushMediaConstraints.java)
-                                *
-                                * GifMaxSize return 5 * MB;
-                                * For reference, other media size limits we're not explicitly enforcing:
-                                * ImageMaxSize return 420 * KB;
-                                * VideoMaxSize return 100 * MB;
-                                * getAudioMaxSize 100 * MB;
-                                */
-                               [self sendMessageAttachment:imageData ofType:@"image/gif"];
-                           } else {
-                               DDLogVerbose(@"Compressing attachment as image/jpeg");
-                               UIImage *pickedImage = [[UIImage alloc] initWithData:imageData];
-                               [self sendMessageAttachment:[self qualityAdjustedAttachmentForImage:pickedImage]
-                                                    ofType:@"image/jpeg"];
-                           }
+						   dispatch_async(dispatch_get_main_queue(), ^{
+							   [self dismissViewControllerAnimated:YES
+														completion:^{
+															if ([dataUTI isEqualToString:(__bridge NSString *)kUTTypeGIF]
+															   && imageData.length <= 5 * 1024 * 1024) {
+															   DDLogVerbose(@"Sending raw image/gif to retain any animation");
+															   /**
+																* Media Size constraints lifted from Signal-Android
+																* (org/thoughtcrime/securesms/mms/PushMediaConstraints.java)
+																*
+																* GifMaxSize return 5 * MB;
+																* For reference, other media size limits we're not explicitly enforcing:
+																* ImageMaxSize return 420 * KB;
+																* VideoMaxSize return 100 * MB;
+																* getAudioMaxSize 100 * MB;
+																*/
+															   [self sendMessageAttachment:imageData ofType:@"image/gif"];
+															} else {
+															   DDLogVerbose(@"Compressing attachment as image/jpeg");
+															   UIImage *pickedImage = [[UIImage alloc] initWithData:imageData];
+															   [self sendMessageAttachment:[self qualityAdjustedAttachmentForImage:pickedImage]
+																					ofType:@"image/jpeg"];
+															}
+														}];
+						   });
                        }];
     }
 }
 
-- (void)sendMessageAttachment:(NSData *)attachmentData ofType:(NSString *)attachmentType
+- (void)sendMessageAttachment:(NSData *)attachmentData
+					   ofType:(NSString *)attachmentType
 {
     TSOutgoingMessage *message;
     OWSDisappearingMessagesConfiguration *configuration =
@@ -1764,24 +1811,20 @@ typedef enum : NSUInteger {
                                                  attachmentIds:[NSMutableArray new]];
     }
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self dismissViewControllerAnimated:YES
-                                 completion:^{
-                                     DDLogVerbose(@"Sending attachment. Size in bytes: %lu, contentType: %@",
-                                                  (unsigned long)attachmentData.length,
-                                                  attachmentType);
-                                     [self.messageSender sendAttachmentData:attachmentData
-                                                                contentType:attachmentType
-                                                                  inMessage:message
-                                                                    success:^{
-                                                                        DDLogDebug(@"%@ Successfully sent message attachment.", self.tag);
-                                                                    }
-                                                                    failure:^(NSError *error) {
-                                                                        DDLogError(
-                                                                                   @"%@ Failed to send message attachment with error: %@", self.tag, error);
-                                                                    }];
-                                 }];
-    });
+
+	DDLogVerbose(@"Sending attachment. Size in bytes: %lu, contentType: %@",
+				 (unsigned long)attachmentData.length,
+				 attachmentType);
+	[self.messageSender sendAttachmentData:attachmentData
+							   contentType:attachmentType
+								 inMessage:message
+								   success:^{
+									   DDLogDebug(@"%@ Successfully sent message attachment.", self.tag);
+								   }
+								   failure:^(NSError *error) {
+									   DDLogError(
+												  @"%@ Failed to send message attachment with error: %@", self.tag, error);
+								   }];
 }
 
 - (NSURL *)videoTempFolder {
@@ -1812,7 +1855,13 @@ typedef enum : NSUInteger {
     exportSession.outputURL = compressedVideoUrl;
     [exportSession exportAsynchronouslyWithCompletionHandler:^{
       NSError *error;
-      [self sendMessageAttachment:[NSData dataWithContentsOfURL:compressedVideoUrl] ofType:@"video/mp4"];
+
+		dispatch_async(dispatch_get_main_queue(), ^{
+			[self dismissViewControllerAnimated:YES
+									 completion:^{
+										 [self sendMessageAttachment:[NSData dataWithContentsOfURL:compressedVideoUrl] ofType:@"video/mp4"];
+									 }];
+		});
       [[NSFileManager defaultManager] removeItemAtURL:compressedVideoUrl error:&error];
       if (error) {
           DDLogWarn(@"Failed to remove cached video file: %@", error.debugDescription);

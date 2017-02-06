@@ -19,7 +19,8 @@ extern NSString *const OWSMessagesViewControllerDidAppearNotification;
                                                                UITextViewDelegate,
                                                                AVAudioRecorderDelegate,
                                                                AVAudioPlayerDelegate,
-                                                               UIGestureRecognizerDelegate>
+                                                               UIGestureRecognizerDelegate,
+															   JSQMessagesComposerTextViewPasteDelegate>
 
 
 @property (nonatomic, readonly) TSThread *thread;
